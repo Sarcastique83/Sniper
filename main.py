@@ -41,8 +41,8 @@ def embed_snipe(author, content, when):
 def embed_edit(author, before, after, when):
     embed = discord.Embed(color=discord.Color.from_rgb(52, 152, 219))
     embed.set_author(name=author.display_name, icon_url=author.display_avatar.url)
-    embed.add_field(name="Avant :", value=before or "*[Vide]*", inline=False)
-    embed.add_field(name="Après :", value=after or "*[Vide]*", inline=False)
+    embed.add_field(name="Avant", value=before or "*[Vide]*", inline=False)
+    embed.add_field(name="Après", value=after or "*[Vide]*", inline=False)
     embed.set_footer(text=_fmt_hhmm(when))
     return embed
 
