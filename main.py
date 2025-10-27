@@ -48,10 +48,11 @@ def _convert_tenor(url: str) -> str:
 # 🎨 Embeds
 # =============================================================================
 def embed_snipe(author, content: str, attachments: list[str], when: datetime) -> discord.Embed:
-    """Snipe suppression : affiche texte + image/GIF sans texte inutile."""
-    parts = [content if content else "*[Message vide]*"]
+    """Snipe suppression : affiche texte + image/GIF/vidéo sans 'Message vide' inutile."""
+    has_attachments = bool(attachments)
+    description = content if content else ("" if has_attachments else "*[Message vide]*")
 
-    embed = discord.Embed(description="\n".join(parts), color=discord.Color.red())
+    embed = discord.Embed(description=description, color=discord.Color.red())
     embed.set_author(name=author.display_name, icon_url=author.display_avatar.url)
     embed.set_footer(text=_fmt_hhmm(when))
 
@@ -64,7 +65,7 @@ def embed_snipe(author, content: str, attachments: list[str], when: datetime) ->
             embed.set_image(url=first)
         # Vidéo → envoi séparé (Discord prévisualise automatiquement)
         elif first_lower.endswith(VID_EXT):
-            embed.description = embed.description.strip()
+            pass  # rien dans l’embed, affichage auto côté Discord
 
     return embed
 
