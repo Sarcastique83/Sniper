@@ -18,9 +18,8 @@ TZ = pytz.timezone("Europe/Paris")
 # =============================================================================
 intents = discord.Intents.default()
 intents.guilds = True
-intents.messages = True          # ✅ important pour cacher les messages (attachments)
-intents.guild_messages = True    # ✅ idem
-intents.message_content = True   # ✅ pour lire le texte
+intents.messages = True          # important pour recevoir create/edit/delete (et mieux cacher)
+intents.message_content = True   # pour lire le contenu texte
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
 # =============================================================================
@@ -28,6 +27,9 @@ bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 # =============================================================================
 snipes: dict[int, dict] = {}
 edits: dict[int, dict] = {}
+
+# dernier message vu par salon → pour contourner la perte d'attachments sur delete
+last_messages: dict[int, discord.Message] = {}
 
 IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 VID_EXT = (".mp4", ".mov", ".webm")
@@ -66,7 +68,7 @@ def embed_snipe(author, content: str, attachments: list[str], when: datetime) ->
         # Image/GIF intégré dans l'embed
         if first_lower.endswith(IMG_EXT):
             embed.set_image(url=first)
-        # Vidéo -> on n'ajoute rien dans l'embed (Discord prévisualise le lien brut)
+        # Vidéo -> rien dans l'embed (Discord prévisualisera l'URL brute qu'on enverra)
         elif first_lower.endswith(VID_EXT):
             pass
 
@@ -95,27 +97,39 @@ def is_authorized(ctx: commands.Context) -> bool:
 # 👂 Listeners
 # =============================================================================
 @bot.event
+async def on_message(message: discord.Message):
+    """On garde en cache le dernier message vu dans chaque salon (contourne perte d'attachments)."""
+    if message.guild and message.guild.id == SERVER_ID and not message.author.bot:
+        last_messages[message.channel.id] = message
+    # très important pour que les commandes (!!snipe, !!snipee) fonctionnent
+    await bot.process_commands(message)
+
+@bot.event
 async def on_message_delete(message: discord.Message):
     if not message.guild or message.guild.id != SERVER_ID:
         return
     if message.author.bot:
         return
 
-    # ✅ récupère TOUT ce qu'on peut : urls des pièces jointes + liens présents dans le texte
+    # Si Discord ne fournit pas d'attachments au delete, on retombe sur le dernier message vu
+    msg = message if message.attachments else last_messages.get(message.channel.id)
+    if not msg:
+        return
+
     attachments: list[str] = []
 
     # pièces jointes natives (images/vidéos upload)
-    for att in message.attachments:
+    for att in msg.attachments:
         if att.url:
             attachments.append(att.url)
 
     # liens collés dans le message (cdn discord, tenor, etc.)
-    inline_links = re.findall(r"https?://[^\s>]+", message.content or "")
+    inline_links = re.findall(r"https?://[^\s>]+", (msg.content or ""))
     attachments.extend(inline_links)
 
     snipes[message.channel.id] = {
-        "author": message.author,
-        "content": message.content,
+        "author": msg.author,
+        "content": msg.content,
         "attachments": attachments,
         "when": datetime.now(TZ)
     }
