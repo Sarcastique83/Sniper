@@ -17,7 +17,10 @@ TZ = pytz.timezone("Europe/Paris")
 # 🚀 Bot
 # =============================================================================
 intents = discord.Intents.default()
-intents.message_content = True
+intents.guilds = True
+intents.messages = True          # ✅ important pour cacher les messages (attachments)
+intents.guild_messages = True    # ✅ idem
+intents.message_content = True   # ✅ pour lire le texte
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
 # =============================================================================
@@ -30,13 +33,13 @@ IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 VID_EXT = (".mp4", ".mov", ".webm")
 
 # =============================================================================
-# 🧰 Fonctions utilitaires
+# 🧰 Utils
 # =============================================================================
 def _fmt_hhmm(dt: datetime) -> str:
     return dt.astimezone(TZ).strftime("%H:%M")
 
 def _convert_tenor(url: str) -> str:
-    """Convertit une URL Tenor classique en lien direct .gif si possible."""
+    """Convertit une URL Tenor 'page' en lien direct .gif si possible."""
     if "tenor.com/view/" in url:
         match = re.search(r"tenor\.com/view/.+?-(\d+)", url)
         if match:
@@ -57,20 +60,19 @@ def embed_snipe(author, content: str, attachments: list[str], when: datetime) ->
     embed.set_footer(text=_fmt_hhmm(when))
 
     if attachments:
-        first = _convert_tenor(attachments[0])
+        first = _convert_tenor(attachments[0])  # Tenor -> .gif si possible
         first_lower = first.lower()
 
-        # Image ou GIF → affichage direct dans l’embed
+        # Image/GIF intégré dans l'embed
         if first_lower.endswith(IMG_EXT):
             embed.set_image(url=first)
-        # Vidéo → envoi séparé (Discord prévisualise automatiquement)
+        # Vidéo -> on n'ajoute rien dans l'embed (Discord prévisualise le lien brut)
         elif first_lower.endswith(VID_EXT):
-            pass  # rien dans l’embed, affichage auto côté Discord
+            pass
 
     return embed
 
 def embed_edit(author, before: str, after: str, when: datetime) -> discord.Embed:
-    """Snipe édition : fields Avant / Après."""
     embed = discord.Embed(color=discord.Color.from_rgb(52, 152, 219))
     embed.set_author(name=author.display_name, icon_url=author.display_avatar.url)
     embed.add_field(name="Avant :", value=before or "*[Vide]*", inline=False)
@@ -79,7 +81,7 @@ def embed_edit(author, before: str, after: str, when: datetime) -> discord.Embed
     return embed
 
 # =============================================================================
-# 🔒 Accès commandes
+# 🔒 Accès
 # =============================================================================
 def is_authorized(ctx: commands.Context) -> bool:
     if ctx.author.premium_since:
@@ -99,11 +101,17 @@ async def on_message_delete(message: discord.Message):
     if message.author.bot:
         return
 
-    attachments = [att.url for att in (message.attachments or [])]
+    # ✅ récupère TOUT ce qu'on peut : urls des pièces jointes + liens présents dans le texte
+    attachments: list[str] = []
 
-    # Détection des liens Tenor dans le contenu
-    tenor_links = re.findall(r"https?://(?:www\.)?tenor\.com/[^\s>]+", message.content or "")
-    attachments.extend(tenor_links)
+    # pièces jointes natives (images/vidéos upload)
+    for att in message.attachments:
+        if att.url:
+            attachments.append(att.url)
+
+    # liens collés dans le message (cdn discord, tenor, etc.)
+    inline_links = re.findall(r"https?://[^\s>]+", message.content or "")
+    attachments.extend(inline_links)
 
     snipes[message.channel.id] = {
         "author": message.author,
@@ -139,7 +147,7 @@ async def snipe_cmd(ctx: commands.Context):
 
     embed = embed_snipe(data["author"], data["content"], data["attachments"], data["when"])
 
-    # Si c’est une vidéo → lien brut pour affichage automatique
+    # Si c'est une vidéo -> on envoie l'URL brute à côté pour le lecteur auto
     first = (data["attachments"][0].lower() if data.get("attachments") else "")
     if first and first.endswith(VID_EXT):
         return await ctx.send(content=data["attachments"][0], embed=embed)
