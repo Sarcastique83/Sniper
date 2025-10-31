@@ -35,6 +35,10 @@ edits: Dict[int, dict] = {}
 # On garde 5 messages récents par channel
 last_messages: Dict[int, Deque[discord.Message]] = {}
 
+# Cache persistant par message.id → infos utiles (texte + PJ + liens)
+message_cache: Dict[int, dict] = {}
+CACHE_LIMIT = 500  # sécurité mémoire
+
 IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 VID_EXT = (".mp4", ".mov", ".webm")
 
@@ -49,7 +53,7 @@ def _fmt_hhmm(dt: datetime) -> str:
 def _convert_tenor(url: str) -> str:
     """Convertit une URL Tenor 'page' en lien direct .gif si possible."""
     if "tenor.com/view/" in url:
-        match = re.search(r"tenor\\.com/view/.+?-(\\d+)", url)
+        match = re.search(r"tenor\.com/view/.+?-(\d+)", url)
         if match:
             gif_id = match.group(1)
             return f"https://media.tenor.com/{gif_id}.gif"
@@ -80,9 +84,7 @@ def embed_snipe(author: discord.Member, content: str, attachments: List[str], wh
         # Image/GIF intégré dans l'embed
         if lower.endswith(IMG_EXT):
             embed.set_image(url=first)
-        # Vidéo -> rien dans l'embed (Discord prévisualisera l'URL brute qu'on enverra)
-        # elif lower.endswith(VID_EXT): pass
-
+        # Vidéo → rien dans l'embed (Discord prévisualisera l'URL brute qu'on enverra)
     return embed
 
 
@@ -112,12 +114,29 @@ def is_authorized(ctx: commands.Context) -> bool:
 
 @bot.event
 async def on_message(message: discord.Message):
-    """On conserve plusieurs derniers messages par salon (deque) pour ne pas écraser
-    l'image/vidéo si d'autres messages arrivent avant la suppression."""
+    """Capture *proactive* : on enregistre chaque message (texte + liens + PJ)
+    dès son arrivée, pour ne plus dépendre des données manquantes à la suppression."""
     if message.guild and message.guild.id == SERVER_ID and not message.author.bot:
+        # ---- Cache persistant par message.id ----
+        attachments = [att.url for att in message.attachments if att.url]
+        inline_links = _gather_links_from_content(message.content or "")
+        message_cache[message.id] = {
+            "author": message.author,
+            "content": message.content,
+            "attachments": attachments + inline_links,
+            "created_at": message.created_at,
+            "channel_id": message.channel.id,
+        }
+        # GC simple
+        if len(message_cache) > CACHE_LIMIT:
+            oldest_key = next(iter(message_cache))
+            message_cache.pop(oldest_key, None)
+
+        # ---- Deque par salon (fallback local récent) ----
         dq = last_messages.setdefault(message.channel.id, deque(maxlen=5))
         dq.append(message)
-    # impératif pour que les commandes textuelles fonctionnent
+
+    # Indispensable pour que les commandes texte fonctionnent
     await bot.process_commands(message)
 
 
@@ -128,37 +147,42 @@ async def on_message_delete(message: discord.Message):
     if message.author.bot:
         return
 
-    # On tente d'abord de récupérer le message exact depuis notre deque
+    # 1) Priorité : cache persistant par message.id
+    data = message_cache.get(message.id)
+    if data:
+        snipes[message.channel.id] = {
+            "author": data["author"],
+            "content": data["content"],
+            "attachments": data["attachments"],
+            "when": datetime.now(TZ),
+        }
+        return
+
+    # 2) Fallback : tenter de retrouver un message équivalent dans le deque
     dq = last_messages.get(message.channel.id)
     chosen = message
-
     if dq:
-        # 1) préférence : même ID si encore en cache
+        # même ID si encore présent
         for m in reversed(dq):
             if m.id == message.id:
                 chosen = m
                 break
-        # 2) si pas d'attachments connus, on cherche le dernier message du même auteur avec PJ
+        # sinon dernier message du même auteur avec PJ
         if (not getattr(chosen, "attachments", None)) or len(chosen.attachments) == 0:
             for m in reversed(dq):
                 if m.author.id == message.author.id and m.attachments:
                     chosen = m
                     break
 
-    # Rien de fiable → on abandonne proprement
-    if chosen is None:
-        return
-
-    # Collecte des pièces jointes natives + liens collés (cdn discord, tenor, etc.)
+    # Collecte
     attachments: List[str] = []
     for att in getattr(chosen, "attachments", []) or []:
         if att.url:
             attachments.append(att.url)
-
     attachments.extend(_gather_links_from_content(getattr(chosen, "content", "") or ""))
 
     snipes[message.channel.id] = {
-        "author": chosen.author,
+        "author": getattr(chosen, "author", message.author),
         "content": getattr(chosen, "content", ""),
         "attachments": attachments,
         "when": datetime.now(TZ),
@@ -192,13 +216,13 @@ async def snipe_cmd(ctx: commands.Context):
     if not data:
         return await ctx.send("Aucun message supprimé à afficher 😶")
 
-    embed = embed_snipe(data["author"], data["content"], data["attachments"], data["when"])
+    embed = embed_snipe(data["author"], data["content"], data["attachments"], data["when"]) 
 
     # Si c'est une vidéo → on envoie l'URL brute à côté pour le lecteur auto
-    first = (data.get("attachments") or [])
-    first = first[0].lower() if first else ""
+    first_list = data.get("attachments") or []
+    first = first_list[0].lower() if first_list else ""
     if first and first.endswith(VID_EXT):
-        return await ctx.send(content=data["attachments"][0], embed=embed)
+        return await ctx.send(content=first_list[0], embed=embed)
 
     await ctx.send(embed=embed)
 
@@ -212,7 +236,7 @@ async def snipee_cmd(ctx: commands.Context):
     if not data:
         return await ctx.send("Aucune édition récente à afficher 😶")
 
-    embed = embed_edit(data["author"], data["before"], data["after"], data["when"])
+    embed = embed_edit(data["author"], data["before"], data["after"], data["when"]) 
     await ctx.send(embed=embed)
 
 # =============================================================================
